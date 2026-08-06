@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+backups/
+output/
+.env
+README.md
+token.json
