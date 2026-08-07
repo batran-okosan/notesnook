@@ -3,7 +3,8 @@
 
 When no backup file is given, the script uses today's backup from the
 ``backups/`` directory (``backups/YYYY-MM-DD-08-00-0.nnbackupz``). If that
-file is missing, an email notification is sent via ``notify.py``.
+file is missing, an email notification is sent via ``notify.py``. After a
+successful run, the auto-detected backup file is deleted from disk.
 
 Examples
 --------
@@ -362,6 +363,20 @@ def resolve_backup_path(backup_arg) -> Path:
     return expected
 
 
+def delete_processed_backup(backup_path: Path) -> None:
+    """Delete the backup file after it has been processed successfully.
+
+    Only auto-detected daily backups are removed; a backup file the user
+    explicitly passed as an argument is always left untouched.
+    """
+    try:
+        backup_path.unlink()
+        print(f"Deleted processed backup: {backup_path}")
+    except OSError as error:
+        print(f"Warning: could not delete backup {backup_path}: {error}",
+              file=sys.stderr)
+
+
 def main():
     load_env_file()
 
@@ -495,6 +510,13 @@ def main():
                depth=1, show_content=args.show_content, visited={root["id"]},
                allowed_notes=allowed_notes, important_notes=important_notes,
                excluded_children=excluded_children)
+
+    # Free disk space: remove the auto-detected daily backup after a fully
+    # successful run (reports written and uploaded). Explicitly provided
+    # backups are kept. This is the last step, so any earlier failure leaves
+    # the backup in place.
+    if args.backup is None:
+        delete_processed_backup(backup_path)
 
 
 if __name__ == "__main__":

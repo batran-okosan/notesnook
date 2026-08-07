@@ -39,6 +39,8 @@ The date is the day the script runs; the time portion (`08-00-0`) is a constant,
 
 **If that file is missing, the script sends an email notification and exits.** The email is sent by `notify.py` (see below) and includes the expected path so you know exactly which backup is missing.
 
+**After a successful run, the auto-detected backup file is deleted from disk** — the reports are saved locally and uploaded to Google Docs, so the daily backups do not accumulate. The deletion happens only after the whole run has succeeded (reports written and uploaded); if anything fails, the backup is kept. A backup file you pass explicitly as an argument is never deleted.
+
 Because `backup` is an optional positional argument, a single positional argument is treated as the **notebook**:
 
 ```bash
