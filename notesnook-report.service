@@ -1,0 +1,10 @@
+[Unit]
+Description=Notesnook notebook report generator
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/levi/notesnook
+ExecStart=/home/levi/notesnook/.venv/bin/python3 /home/levi/notesnook/list_notesnook_notebook.py "investing"
+StandardOutput=journal
+StandardError=journal
