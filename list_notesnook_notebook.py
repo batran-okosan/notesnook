@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Recursively list a notebook from this Notesnook JSON export.
 
+When no backup file is given, the script uses today's backup from the
+``backups/`` directory (``backups/YYYY-MM-DD-08-00-0.nnbackupz``). If that
+file is missing, an email notification is sent via ``notify.py``.
+
 Examples
 --------
+python list_notesnook_notebook.py --list-notebooks
+python list_notesnook_notebook.py investing
 python list_notesnook_notebook.py unzipped.json --list-notebooks
 python list_notesnook_notebook.py 2026-08-04-23-50-11.nnbackupz investing
 python list_notesnook_notebook.py unzipped.json "trading archive"
@@ -10,7 +16,7 @@ python list_notesnook_notebook.py unzipped.json 694441044497c7197d44b3e7 --show-
 python list_notesnook_notebook.py unzipped.json "investing/lessons" --tag important
 python list_notesnook_notebook.py unzipped.json "investing/lessons" --tag important --modified-within-days 7
 python list_notesnook_notebook.py unzipped.json "investing/lessons" --tag important --tag lessons --tag-match any
-python list_notesnook_notebook.py unzipped.json investing --upload-to-gdrive
+python list_notesnook_notebook.py investing --no-upload-to-gdrive
 """
 
 from __future__ import annotations
@@ -28,26 +34,24 @@ from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
+from dotenv import load_dotenv
 
-def load_env_file(path):
-    """Read simple KEY=VALUE settings without requiring python-dotenv."""
-    values = {}
-    if not path.exists():
-        return values
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            raise ValueError(f"{path.name}:{line_number}: expected KEY=VALUE")
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
+ENV_PATH = Path(__file__).with_name(".env")
 
 
-def setting(name, fallback, env_file):
+def load_env_file() -> None:
+    """Load KEY=VALUE settings from the project .env file, if present.
+
+    python-dotenv does not override variables already present in the process
+    environment, so a shell variable takes precedence over the .env value.
+    """
+    if ENV_PATH.is_file():
+        load_dotenv(ENV_PATH)
+
+
+def setting(name, fallback):
     """Environment variables override .env values, which override fallbacks."""
-    return os.environ.get(name, env_file.get(name, fallback))
+    return os.environ.get(name) or fallback
 
 
 def comma_separated(value):
@@ -303,15 +307,69 @@ def write_report(path, heading, note_ids, notes, contents):
     path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Backup auto-detection
+# ---------------------------------------------------------------------------
+
+# Backups are downloaded daily at 08:00 into the backups/ directory (relative
+# to the working directory), named e.g. backups/2026-08-07-08-00-0.nnbackupz.
+BACKUP_DIR = Path("backups")
+BACKUP_TIME_CONSTANT = "08-00-0"
+
+
+def default_backup_path() -> Path:
+    """Return today's expected backup path: backups/YYYY-MM-DD-08-00-0.nnbackupz."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    return BACKUP_DIR / f"{today}-{BACKUP_TIME_CONSTANT}.nnbackupz"
+
+
+def notify_backup_missing(expected: Path) -> None:
+    """Email the user that today's backup file is missing."""
+    from notify import send_failure_alert
+
+    send_failure_alert(
+        subject="Notesnook backup file missing",
+        message_body=(
+            "The expected Notesnook backup file was not found:\n\n"
+            f"    {expected}\n\n"
+            "Please check that today's backup was downloaded and placed "
+            "in the backups/ directory."
+        ),
+    )
+
+
+def resolve_backup_path(backup_arg) -> Path:
+    """Return the backup file to read.
+
+    If ``backup_arg`` is given it must already exist. Otherwise the script
+    uses today's automatically named backup file; if that file is missing, an
+    email notification is sent and the script exits.
+    """
+    if backup_arg is not None:
+        if not backup_arg.is_file():
+            raise SystemExit(f"Backup file not found: {backup_arg}")
+        return backup_arg
+
+    expected = default_backup_path()
+    if not expected.is_file():
+        notify_backup_missing(expected)
+        raise SystemExit(
+            f"Backup file not found: {expected}\n"
+            "(a notification email has been sent)"
+        )
+
+    print(f"Using today's backup: {expected}")
+    return expected
+
+
 def main():
-    try:
-        env_file = load_env_file(Path(__file__).with_name(".env"))
-    except (OSError, ValueError) as error:
-        sys.exit(f"Cannot read .env: {error}")
+    load_env_file()
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("backup", type=Path,
-                        help="Path to unzipped.json or a Notesnook .nnbackupz archive")
+    parser.add_argument("backup", type=Path, nargs="?", default=None,
+                        help="Path to unzipped.json or a Notesnook .nnbackupz archive; "
+                             "defaults to today's file in backups/ "
+                             "(e.g. backups/2026-08-07-08-00-0.nnbackupz)")
     parser.add_argument("notebook", nargs="?",
                         help="Notebook ID, exact title, or path such as 'investing/lessons'")
     parser.add_argument("--list-notebooks", action="store_true",
@@ -321,28 +379,38 @@ def main():
     parser.add_argument("--tag", metavar="TAG", action="append",
                         help="Filter by exact tag title or ID; repeat to provide multiple tags")
     parser.add_argument("--tag-match", choices=("all", "any"),
-                        default=setting("DEFAULT_TAG_MATCH", "any", env_file),
+                        default=setting("DEFAULT_TAG_MATCH", "any"),
                         help="How repeated --tag values combine (default: any)")
     parser.add_argument("--modified-within-days", type=parse_days, metavar="DAYS",
-                        default=parse_days(setting("DEFAULT_MODIFIED_WITHIN_DAYS", "7", env_file)),
+                        default=parse_days(setting("DEFAULT_MODIFIED_WITHIN_DAYS", "7")),
                         help="Filter to notes modified during the preceding number of UTC days (default: 7)")
     parser.add_argument("--filter-mode", choices=("all", "any"),
-                        default=setting("DEFAULT_FILTER_MODE", "any", env_file),
+                        default=setting("DEFAULT_FILTER_MODE", "any"),
                         help="How the tag and date conditions combine (default: any)")
     parser.add_argument("--exclude-notebook", metavar="NOTEBOOK", action="append",
                         help="Exclude a direct child notebook by title or ID; repeat as needed")
     parser.add_argument("--output-dir", type=Path, metavar="DIRECTORY",
-                        default=Path(setting("DEFAULT_OUTPUT_DIRECTORY", ".", env_file)),
+                        default=Path(setting("DEFAULT_OUTPUT_DIRECTORY", ".")),
                         help="Directory for important.txt and recent.txt (default: script directory)")
     parser.add_argument("--include-deleted", action="store_true")
-    parser.add_argument("--upload-to-gdrive", action="store_true",
-                        help="After writing important.txt and recent.txt, upload "
-                             "them to Google Docs via update_gdoc.py")
+    parser.add_argument("--upload-to-gdrive", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Upload important.txt and recent.txt to Google Docs "
+                             "via update_gdoc.py (default: on; use "
+                             "--no-upload-to-gdrive to skip)")
     args = parser.parse_args()
 
+    if (args.backup is not None and args.notebook is None
+            and not args.backup.is_file()):
+        # Backward-compatible single positional: `script.py NOTEBOOK`
+        # auto-detects today's backup instead of treating NOTEBOOK as a path.
+        args.notebook = str(args.backup)
+        args.backup = None
+
+    backup_path = resolve_backup_path(args.backup)
     try:
         notebooks, notes, contents, tags, children, notebook_notes, tag_notes = load_backup(
-            args.backup, args.include_deleted
+            backup_path, args.include_deleted
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         sys.exit(f"Cannot read backup: {error}")
@@ -383,7 +451,7 @@ def main():
         if tag.get("title", "").casefold() == "important"
     ))
     excluded_names = (args.exclude_notebook if args.exclude_notebook is not None
-                      else comma_separated(setting("EXCLUDE_NOTEBOOKS", "", env_file)))
+                      else comma_separated(setting("EXCLUDE_NOTEBOOKS", "")))
     excluded_children = {
         child_id for child_id in children.get(root["id"], ())
         if child_id in excluded_names or notebooks[child_id].get("title") in excluded_names

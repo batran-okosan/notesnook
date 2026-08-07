@@ -5,3 +5,6 @@ output/
 .env
 README.md
 token.json
+important.txt
+recent.txt
+credentials.json
